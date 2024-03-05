@@ -1,0 +1,125 @@
+---
+name: wps
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/wps.yml
+  schedule:
+    - cron: 0 8 * * 3
+
+permissions: write-all
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    name: check trigger
+    outputs:
+      trigger: ${{ steps.check.outputs.trigger }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@main
+      - name: create manifest branch if not exist
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if ! gh api /repos/${{github.repository}}/branches/${{github.workflow}} > /dev/null 2>&1; then
+          git config --global user.name gh-drive
+          git config --global user.email 148326012+gh-drive@users.noreply.github.com
+          git checkout --orphan ${{github.workflow}}
+          git rm -rf .
+          echo "empty" > version
+          git add version
+          git commit --allow-empty -m "chore: create manifest"
+          git push origin ${{github.workflow}}
+          git checkout main
+          fi
+
+      - uses: actions/checkout@main
+        name: checkout manifest
+        with:
+          ref: ${{github.workflow}}
+          path: manifest
+
+      - name: check if we need to trigger a build
+        id: check
+        run: |
+          VERSION=$(wget -q https://aur.archlinux.org/cgit/aur.git/plain/PKGBUILD?h=wps-office -O - | grep "pkgver=" | head -1 | cut -c 8-)
+          OLD_VERSION=$(cat manifest/version)
+          if [ "$VERSION" != "$OLD_VERSION" ]; then
+          echo "trigger=true" >> "$GITHUB_OUTPUT"
+          else
+          echo "trigger=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          rm -rf manifest
+
+  build:
+    needs: trigger
+    if: needs.trigger.outputs.trigger == 'true'
+    name: build
+    permissions: write-all
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@main
+        with:
+          repository: ivan-hc/WPS-Office-appimage
+      - name: Patch DPI
+        run: |
+          sed -i '/QT_FONT_DPI/d' wps-office.sh
+          sed -i 's/WPS-Office_$VERSION-x86_64.AppImage/WPS-Office.AppImage/g' wps-office.sh
+      - name: build
+        run: |
+          sudo apt update
+          sudo apt install libfuse2
+          bash wps-office.sh
+
+      - name: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.trigger.outputs.version }}
+        run: |
+          gh release create "wps" --notes "WPS Office ${VERSION}" --title "wps" --repo "${{github.repository}}" || true
+          gh release edit "wps" --notes "WPS Office ${VERSION}" --title "wps" --repo "${{github.repository}}" || true
+          gh release delete-asset "wps" "WPS-Office.AppImage" --yes --repo "${{github.repository}}" || true
+          gh release upload "wps" "WPS-Office.AppImage" --repo "${{github.repository}}"
+
+          gh release create "wps-${VERSION}" --notes "WPS Office ${VERSION}" --title "wps-${VERSION}" --repo "${{github.repository}}" || true
+          gh release delete-asset "wps-${VERSION}" "WPS-Office.AppImage" --yes --repo "${{github.repository}}" || true
+          gh release upload "wps-${VERSION}" "WPS-Office.AppImage" --repo "${{github.repository}}"
+
+      - name: checkout manifest
+        uses: actions/checkout@main
+        with:
+          ref: ${{github.workflow}}
+          path: manifest
+
+      - name: update manifest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.trigger.outputs.version }}
+        run: |
+          cd manifest
+          echo "version=${VERSION}" > version
+          cat version
+          git config --global user.name gh-drive
+          git config --global user.email 148326012+gh-drive@users.noreply.github.com
+          git config pull.rebase false
+          git add version
+          git commit -m "chore: update version to ${VERSION}" || export NO_UPDATES=true
+          if [ "$NO_UPDATES" != "true" ]; then
+          echo "push to manifest"
+          git push --force
+          fi
+
+  keepalive-job:
+    name: Keepalive Workflow
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@main
+      - uses: gautamkrishnar/keepalive-workflow@v1
+        with:
+          use_api: true
