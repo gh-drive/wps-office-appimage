@@ -49,6 +49,8 @@ jobs:
         run: |
           VERSION=$(wget -q https://aur.archlinux.org/cgit/aur.git/plain/PKGBUILD?h=wps-office -O - | grep "pkgver=" | head -1 | cut -c 8-)
           OLD_VERSION=$(cat manifest/version)
+          echo "VERSION=$VERSION"
+          echo "OLD_VERSION=$OLD_VERSION"
           if [ "$VERSION" != "$OLD_VERSION" ]; then
           echo "trigger=true" >> "$GITHUB_OUTPUT"
           else
@@ -74,7 +76,7 @@ jobs:
       - name: build
         run: |
           sudo apt update
-          sudo apt install libfuse2
+          sudo apt install libfuse2 desktop-file-utils
           bash wps-office.sh
 
       - name: release
